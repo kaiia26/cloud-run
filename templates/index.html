@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Image Upload</title>
+</head>
+<body>
+    <h1>Image Upload</h1>
+    <form method="POST" enctype="multipart/form-data" action="/">
+        <div>
+            <label for="file">Choose file to upload</label>
+            <input type="file" id="file" name="form_file" accept="image/jpeg">
+        </div>
+        <div>
+            <button type="submit">Submit</button> 
+        </div>
+    </form>
+
+    <h2>Uploaded Images</h2>
+    <ul>
+        {% for file in files %}
+            <li>
+                <a href="{{ url_for('get_file', filename=file) }}">{{ file }}</a>
+                <br>
+                <!-- Display the image directly using the file URL -->
+                <img src="{{ url_for('get_file', filename=file) }}" alt="{{ file }}" style="max-width:200px;"/>
+            </li>
+        {% endfor %}
+    </ul>
+</body>
+</html>

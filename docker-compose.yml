@@ -1,0 +1,10 @@
+version: '3'
+services:
+  web:
+    build: .
+    volumes:
+      - .:/app
+    ports:
+      - "5000:5000"
+    command: >
+      sh -c "mkdir -p /app/files && gunicorn -b 0.0.0.0:5000 main:app"
