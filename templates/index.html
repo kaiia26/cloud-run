@@ -19,10 +19,12 @@
     <ul>
         {% for file in files %}
             <li>
-                <a href="{{ url_for('get_file', filename=file) }}">{{ file }}</a>
+                <!-- Link each image to its own detailed view -->
+                <a href="{{ url_for('image_details', filename=file) }}">
+                    <img src="{{ url_for('get_file', filename=file) }}" alt="{{ file }}" style="max-width:200px;"/>
+                </a>
                 <br>
-                <!-- Display the image directly using the file URL -->
-                <img src="{{ url_for('get_file', filename=file) }}" alt="{{ file }}" style="max-width:200px;"/>
+                <a href="{{ url_for('image_details', filename=file) }}">{{ file }}</a>
             </li>
         {% endfor %}
     </ul>
