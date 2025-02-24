@@ -78,11 +78,26 @@ def upload_to_gemini(file_content, mime_type="image/jpeg"):
     os.unlink(tmp_file_path)  # Delete the temporary file
     return uploaded_file
 
+def create_json_file(bucket_name, filename, title, description, status = "success"):
+    """Creates and uploads the json to GCS."""
+    metadata = {"title": title, "description": description, "status": status}
+    json_content = json.dumps(metadata, indent=4)
+    json_filename = filename.rsplit(".", 1)[0].replace(" ", "_") + ".json"
+    upload_to_gcs(json_content, BUCKET_NAME, json_filename, content_type="application/json")
+    logger.info(f"Saved title and description to {json_filename}")
+    
+def create_text_file(bucket_name, filename, title, description):
+    """Creates and uploads the text to GCS."""
+    text_content = f"Title: {title}\nDescription: {description}"
+    text_filename = filename.rsplit(".", 1)[0].replace(" ", "_") + ".txt"
+    upload_to_gcs(text_content, BUCKET_NAME, text_filename, content_type="text/plain")
+    logger.info(f"Saved title and description to {text_filename}")
+
 # Generate the title and description for the image
 def generate_title_description(bucket_name, filename):
     """
     Generates a title and description for an image using the Gemini API.
-    Saves the title and description in a JSON file to GCS.
+    Returns the title and description as a dictionary.
     """
     logger.info(f"Generating title and description for {filename}")
     # Download the image content from GCS
@@ -97,63 +112,42 @@ def generate_title_description(bucket_name, filename):
         response.resolve()
         logger.info(f"Gemini's raw response for {filename}: {response.text}")  # Log the raw response
 
-        # Check for empty response
+        # Check if the response is empty
         if not response.text or response.text.isspace():
             logger.error(f"Gemini returned an empty response for {filename}")
-            title = "Error generating title"
-            description = "Error generating description"
-            metadata = {"title": title, "description": description}
-            json_content = json.dumps(metadata, indent=4)
-            json_filename = filename.rsplit(".", 1)[0].replace(" ", "_") + ".json"
-            upload_to_gcs(json_content, BUCKET_NAME, json_filename, content_type="application/json")
-            return title, description
-        
+            raise ValueError(f"Gemini returned an empty response for {filename}")
+
         # Clean up the response using regex
         cleaned_response = response.text
-        match = re.search(r"\{.*\}", cleaned_response, re.DOTALL)
+        match = re.search(r"\{.*?\}(?=\s*|$)", cleaned_response, re.DOTALL)
         if match:
             cleaned_response = match.group(0)
         else:
             logger.error(f"No JSON found in response for {filename}")
-            title = "Error generating title"
-            description = "Error generating description"
-            metadata = {"title": title, "description": description}
-            json_content = json.dumps(metadata, indent=4)
-            json_filename = filename.rsplit(".", 1)[0].replace(" ", "_") + ".json"
-            upload_to_gcs(json_content, BUCKET_NAME, json_filename, content_type="application/json")
-            return title, description
-        
+            raise ValueError(f"No JSON found in response for {filename}")
+
         # Attempt to parse the cleaned response
         try:
             response_json = json.loads(cleaned_response)
         except json.JSONDecodeError:
             logger.error(f"JSON decoding error after cleaning for {filename}: {cleaned_response}")
-            title = "Error generating title"
-            description = "Error generating description"
-            metadata = {"title": title, "description": description}
-            json_content = json.dumps(metadata, indent=4)
-            json_filename = filename.rsplit(".", 1)[0].replace(" ", "_") + ".json"
-            upload_to_gcs(json_content, BUCKET_NAME, json_filename, content_type="application/json")
-            return title, description
+            raise ValueError(f"JSON decoding error after cleaning for {filename}: {cleaned_response}")
+
 
         # Load the json
         title = response_json.get("title", "Untitled")
         description = response_json.get("description", "No description available")
 
+        create_json_file(bucket_name, filename, title, description)
+        create_text_file(bucket_name, filename, title, description)
+        
+        return {"title": title, "description": description}
+
+    except ValueError as e:
+        # Handle the errors and return an error message
+        logger.error(f"Error generating title and description for {filename}: {e}")
+        return {"title": "Error generating title", "description": "Error generating description"}
+
     except Exception as e:
         logger.error(f"An unexpected error occurred for {filename}: {e}")
-        title = "Error generating title"
-        description = "Error generating description"
-
-    # Prepare metadata
-    metadata = {"title": title, "description": description}
-    json_content = json.dumps(metadata, indent=4)
-
-    # Save metadata as JSON to GCS
-    json_filename = filename.rsplit(".", 1)[0].replace(" ", "_") + ".json"
-    upload_to_gcs(
-        json_content, BUCKET_NAME, json_filename, content_type="application/json"
-    )
-    logger.info(f"Saved title and description to {json_filename}")
-
-    return title, description
+        return {"title": "Error generating title", "description": "Error generating description"}

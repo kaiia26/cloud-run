@@ -80,7 +80,6 @@ def upload_file():
             logger.info(f"Credential: {credentials}")
             storage_client = storage.Client(credentials=credentials)
             upload_to_gcs(file_content, BUCKET_NAME, filename, storage_client)
-            generate_title_description(BUCKET_NAME, filename)
 
             flash('File successfully uploaded')
 
@@ -96,36 +95,22 @@ def upload_file():
 
 @app.route('/image_details/<filename>')
 def image_details(filename):
-    """Displays the title and description of an image."""
+    """
+    Displays the title and description of an image.
+    """
     if 'credentials' not in session:
         flash('Please authenticate first')
         return redirect(url_for('authorize'))
 
-    # Construct the expected JSON filename
+    # Generate the title and description
+    title_description = generate_title_description(BUCKET_NAME, filename)
+
+    # Upload the title and description to GCS
     json_filename = filename.rsplit(".", 1)[0].replace(" ", "_") + ".json"
+    upload_to_gcs(json.dumps(title_description, indent=4), BUCKET_NAME, json_filename, content_type="application/json")
 
-    # Check if the JSON file exists in GCS
-    if not blob_exists(BUCKET_NAME, json_filename):
-        # If the JSON doesn't exist, set default values
-        title = "Title not generated yet"
-        description = "Description not generated yet"
-    else:
-        # If the JSON file exists, download and parse it
-        try:
-            json_content = download_from_gcs(BUCKET_NAME, json_filename)
-            metadata = json.loads(json_content)
-            # Get the title and description from the JSON, with defaults if missing
-            title = metadata.get("title", "Title not found")
-            description = metadata.get("description", "Description not found")
-        except json.JSONDecodeError:
-            # Handle JSON decoding errors
-            logger.error(f"Error decoding JSON for {json_filename}")
-            title = "Error loading title"
-            description = "Error loading description"
-
-    # Now, title and description are defined, so it's safe to render
-    return render_template('image_details.html', filename=filename, title=title, description=description)
-
+    # Now, title, description, and status are defined, so it's safe to render
+    return render_template('image_details.html', filename=filename, title=title_description["title"], description=title_description["description"], status="success")
 
 @app.route('/files/<filename>')
 def get_file(filename):
