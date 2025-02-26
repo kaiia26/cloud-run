@@ -1,184 +1,161 @@
-from flask import Flask, render_template, request, redirect, url_for, flash, send_file, session
+from flask import Flask, render_template, request, redirect, url_for, flash, send_file
 from werkzeug.utils import secure_filename
-import os, io
-from cloud_storage import upload_to_gcs, download_from_gcs, list_blobs, blob_exists
-from gemini_service import generate_title_description
-from config import BUCKET_NAME
-from google.oauth2 import id_token
-from google_auth_oauthlib.flow import Flow
-from google.auth.transport import requests
-import json
-from google.cloud import secretmanager, storage
-import google.oauth2.credentials
-import logging
-
-app = Flask(__name__)
+import os, io, json, tempfile, logging, re
+from google.cloud import storage, secretmanager
+import google.generativeai as genai
+from config import BUCKET_NAME  # Import BUCKET_NAME from config.py
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+app = Flask(__name__)
 UPLOAD_FOLDER = './files'
 ALLOWED_EXTENSIONS = {'jpg', 'jpeg'}
 app.secret_key = 'supersecretkey'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-def access_secret_version(secret_id, version_id='latest'):
+# Secret Manager access function
+def access_secret(secret_name):
     client = secretmanager.SecretManagerServiceClient()
-    name = f"projects/project-1-kaia-perez-hvala/secrets/{secret_id}/versions/{version_id}"
-    response = client.access_secret_version(name=name)
-    payload = response.payload.data.decode('UTF-8')
-    return payload
+    project_id = "project-1-kaia-perez-hvala"
+    secret_path = f"projects/{project_id}/secrets/{secret_name}/versions/latest"
+    response = client.access_secret_version(request={"name": secret_path})
+    return response.payload.data.decode("UTF-8")
 
-# Load OAuth client secrets from Google Secret Manager
-try:
-    CLIENT_SECRETS_CONTENT = access_secret_version("image_upload_client")
-    CLIENT_SECRETS = json.loads(CLIENT_SECRETS_CONTENT)
-except Exception as e:
-    logger.error(f"Error loading client secrets: {e}")
-    raise
+# Fetch API key and configure Gemini API
+api_key = access_secret("GEMINI_API_KEY")
+genai.configure(api_key=api_key)
 
-SCOPES = ['https://www.googleapis.com/auth/devstorage.full_control'] 
-REDIRECT_URI = 'https://8080-cs-901945017769-default.cs-us-east1-yeah.cloudshell.dev/oauth2/callback'
+generation_config = {
+    "temperature": 1,
+    "top_p": 0.95,
+    "top_k": 64,
+    "max_output_tokens": 8192,
+    "response_mime_type": "text/plain",
+}
 
-flow = Flow.from_client_config(
-    CLIENT_SECRETS,
-    scopes=SCOPES,
-    redirect_uri=REDIRECT_URI
-)
+safety_settings = [
+    {"category": "HATE_SPEECH", "threshold": "BLOCK_NONE"},
+    {"category": "HARASSMENT", "threshold": "BLOCK_NONE"},
+    {"category": "DANGEROUS", "threshold": "BLOCK_NONE"},
+    {"category": "SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+]
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+PROMPT = """
+You are an expert image caption writer. Analyze the image and generate a concise title and a detailed description.
+Return the output in strict JSON format like this:
+{
+    "title": "the generated title",
+    "description": "the generated description"
+}
+"""
+
+model = genai.GenerativeModel(model_name="gemini-1.5-flash", generation_config=generation_config, safety_settings=safety_settings)
+
+# Google Cloud Storage functions
+def upload_to_gcs(file, bucket_name, filename, content_type=None):
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(filename)
+    blob.upload_from_string(file, content_type=content_type)
+    logger.info(f"File {filename} uploaded to {bucket_name}.")
+
+def download_from_gcs(bucket_name, filename):
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(filename)
+    return blob.download_as_string()
+
+def list_blobs(bucket_name):
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    return [blob.name for blob in bucket.list_blobs()]
+
+# Upload image content to Gemini
+def upload_to_gemini(file_content, mime_type="image/jpeg"):
+    with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+        tmp_file.write(file_content)
+        tmp_file_path = tmp_file.name
+
+    try:
+        uploaded_file = genai.upload_file(tmp_file_path, mime_type=mime_type)
+        logger.info(f"Uploaded file: {uploaded_file.display_name} as {uploaded_file.uri}")
+    except Exception as e:
+        logger.error(f"Error in upload to gemini: {e}")
+        raise
+    finally:
+        os.unlink(tmp_file_path)
+    return uploaded_file
+
+# Generate JSON metadata file
+def create_json_file(bucket_name, filename, title, description, status="success", error_message=None):
+    metadata = {"title": title, "description": description, "status": status}
+    if error_message:
+        metadata["error"] = error_message
+    json_content = json.dumps(metadata, indent=4)
+    json_filename = filename.rsplit(".", 1)[0].replace(" ", "_") + ".json"
+    upload_to_gcs(json_content, bucket_name, json_filename, content_type="application/json")
+    logger.info(f"Saved title and description to {json_filename}")
+
+# Generate title and description
+def generate_title_description(bucket_name, filename):
+    logger.info(f"Generating title and description for {filename}")
+    try:
+        image_content = download_from_gcs(bucket_name, filename)
+    except Exception as e:
+        logger.error(f"Error downloading file from GCS: {e}")
+        create_json_file(bucket_name, filename, "Error downloading", "Error downloading", "failure", f"Failed to download: {e}")
+        return {"title": "Error downloading file", "description": "Error downloading file"}
+
+    try:
+        uploaded_file = upload_to_gemini(image_content, mime_type="image/jpeg")
+    except Exception as e:
+        logger.error(f"Error uploading file to Gemini: {e}")
+        create_json_file(bucket_name, filename, "Error uploading", "Error uploading", "failure", f"Failed to upload: {e}")
+        return {"title": "Error uploading file", "description": "Error uploading file"}
+
+    try:
+        response = model.generate_content([uploaded_file, PROMPT])
+        response.resolve()
+        logger.info(f"Gemini's raw response: {response.text}")
+
+        match = re.search(r"\{.*?\}(?=\s*|$)", response.text, re.DOTALL)
+        if match:
+            cleaned_response = match.group(0)
+        else:
+            raise ValueError("No JSON found in response")
+
+        response_json = json.loads(cleaned_response)
+        title = response_json.get("title", "Untitled")
+        description = response_json.get("description", "No description available")
+        create_json_file(bucket_name, filename, title, description)
+        return {"title": title, "description": description}
+    except Exception as e:
+        logger.error(f"Error generating title/description: {e}")
+        create_json_file(bucket_name, filename, "Error generating", "Error generating", "failure", f"Unexpected error: {e}")
+        return {"title": "Error generating title", "description": "Error generating description"}
 
 @app.route('/', methods=['GET', 'POST'])
 def upload_file():
-    if 'credentials' not in session:
-        flash('Please authenticate first')
-        return redirect(url_for('authorize'))
-
     if request.method == 'POST':
-        if 'form_file' not in request.files:
-            flash('No file part')
-            return redirect(request.url), 400
-
-        file = request.files['form_file']
-
-        if file.filename == '':
-            flash('No selected file')
-            return redirect(request.url)
-
+        file = request.files.get('form_file')
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
-
-             # Read the file content:
-            file_content = file.read()  # Read the file content as bytes
-
-            # Upload the image to GCS
-            # Create a storage client with the user's credentials
-            credentials = google.oauth2.credentials.Credentials(**session['credentials'])
-            logger.info(f"Credentials in session: {session['credentials']}")  # Log credentials
-            logger.info(f"Credential: {credentials}")
-            storage_client = storage.Client(credentials=credentials)
-            upload_to_gcs(file_content, BUCKET_NAME, filename, storage_client)
-
+            file_content = file.read()
+            upload_to_gcs(file_content, BUCKET_NAME, filename)
             flash('File successfully uploaded')
-
-            uploaded_files = list_blobs(BUCKET_NAME)
-            return render_template('index.html', files=uploaded_files)
-
-        flash('File type not allowed')
-        return redirect(request.url)
-
-    # Get the list of uploaded files in the cloud storage
-    uploaded_files = list_blobs(BUCKET_NAME)
-    return render_template('index.html', files=uploaded_files)
+    return render_template('index.html', files=list_blobs(BUCKET_NAME))
 
 @app.route('/image_details/<filename>')
 def image_details(filename):
-    """
-    Displays the title and description of an image.
-    """
-    if 'credentials' not in session:
-        flash('Please authenticate first')
-        return redirect(url_for('authorize'))
-
-    # Generate the title and description
     title_description = generate_title_description(BUCKET_NAME, filename)
-
-    # Upload the title and description to GCS
-    json_filename = filename.rsplit(".", 1)[0].replace(" ", "_") + ".json"
-    upload_to_gcs(json.dumps(title_description, indent=4), BUCKET_NAME, json_filename, content_type="application/json")
-
-    # Now, title, description, and status are defined, so it's safe to render
-    return render_template('image_details.html', filename=filename, title=title_description["title"], description=title_description["description"], status="success")
+    return render_template('image_details.html', filename=filename, **title_description)
 
 @app.route('/files/<filename>')
 def get_file(filename):
-    """Fetch and send the image from GCS."""
-    content = download_from_gcs(BUCKET_NAME, filename, download_path=None)
-    return send_file(io.BytesIO(content), mimetype='image/jpeg')
-
-@app.route('/login')
-def login():
-    if 'credentials' in session:
-        return redirect(url_for('upload_file'))
-    else:
-        return redirect(url_for('authorize'))
-
-
-os.environ['OAUTHLIB_INSECURE_TRANSPORT'] = '1'
-
-@app.route('/authorize')
-def authorize():
-    authorization_url, state = flow.authorization_url()
-    session['state'] = state
-    return redirect(authorization_url)
-
-@app.route('/oauth2/callback')
-def oauth2_callback():
-    try:
-        # Check if the state matches (prevent CSRF)
-        if request.args.get('state') != session.get('state'):
-            logger.error("State mismatch detected during authentication.")
-            flash('Authentication failed: Invalid state. Please try again.')
-            session.clear() # Clear any existing session data
-            return redirect(url_for('authorize'))
-
-        flow.fetch_token(authorization_response=request.url)
-        credentials = flow.credentials
-        session['credentials'] = credentials_to_dict(credentials)
-
-        #remove state
-        session.pop('state', None)
-
-        return redirect(url_for('upload_file'))
-    except Exception as e:
-        logger.error(f"Error during OAuth2 callback: {e}")
-        flash('An error occurred during authentication.')
-        session.clear() # Clear any existing session data
-        return redirect(url_for('authorize'))
-
-
-def credentials_to_dict(credentials):
-    return {
-        'token': credentials.token,
-        'refresh_token': credentials.refresh_token,
-        'token_uri': credentials.token_uri,
-        'client_id': credentials.client_id,
-        'client_secret': credentials.client_secret,
-        'scopes': credentials.scopes
-    }
-
-def get_authenticated_session():
-    if 'credentials' not in session:
-        return redirect(url_for('authorize'))
-    credentials = google.oauth2.credentials.Credentials(
-        **session['credentials'])
-    session = requests.AuthorizedSession(credentials)
-    return session
+    return send_file(io.BytesIO(download_from_gcs(BUCKET_NAME, filename)), mimetype='image/jpeg')
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 8080))  
-    app.run(debug=True, host='0.0.0.0', port=port)
-
+    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
 

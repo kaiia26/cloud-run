@@ -1,8 +1,0 @@
-runtime: custom
-env: flex
-
-env_variables:
-  GOOGLE_APPLICATION_CREDENTIALS: "/home/kaiavictoriap/image_upload_flask-python/keys/service_account_key.json"
-  GOOGLE_CLOUD_PROJECT: "project-1-kaia-perez-hvala"
-  BUCKET_NAME: "flask-images"
-entrypoint: gunicorn -b :$PORT main:app
