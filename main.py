@@ -3,17 +3,12 @@ from werkzeug.utils import secure_filename
 import os, io, json, tempfile, logging, re
 from google.cloud import storage, secretmanager
 import google.generativeai as genai
-from config import BUCKET_NAME  # Import BUCKET_NAME from config.py
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 UPLOAD_FOLDER = './files'
 ALLOWED_EXTENSIONS = {'jpg', 'jpeg'}
-app.secret_key = 'supersecretkey'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+BUCKET_NAME = os.environ.get("BUCKET_NAME")
 
 # Secret Manager access function
 def access_secret(secret_name):
@@ -24,7 +19,7 @@ def access_secret(secret_name):
     return response.payload.data.decode("UTF-8")
 
 # Fetch API key and configure Gemini API
-api_key = access_secret("GEMINI_API_KEY")
+api_key = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=api_key)
 
 generation_config = {
@@ -59,7 +54,6 @@ def upload_to_gcs(file, bucket_name, filename, content_type=None):
     bucket = client.bucket(bucket_name)
     blob = bucket.blob(filename)
     blob.upload_from_string(file, content_type=content_type)
-    logger.info(f"File {filename} uploaded to {bucket_name}.")
 
 def download_from_gcs(bucket_name, filename):
     client = storage.Client()
@@ -80,10 +74,8 @@ def upload_to_gemini(file_content, mime_type="image/jpeg"):
 
     try:
         uploaded_file = genai.upload_file(tmp_file_path, mime_type=mime_type)
-        logger.info(f"Uploaded file: {uploaded_file.display_name} as {uploaded_file.uri}")
     except Exception as e:
-        logger.error(f"Error in upload to gemini: {e}")
-        raise
+        print("error")
     finally:
         os.unlink(tmp_file_path)
     return uploaded_file
@@ -96,29 +88,24 @@ def create_json_file(bucket_name, filename, title, description, status="success"
     json_content = json.dumps(metadata, indent=4)
     json_filename = filename.rsplit(".", 1)[0].replace(" ", "_") + ".json"
     upload_to_gcs(json_content, bucket_name, json_filename, content_type="application/json")
-    logger.info(f"Saved title and description to {json_filename}")
 
 # Generate title and description
 def generate_title_description(bucket_name, filename):
-    logger.info(f"Generating title and description for {filename}")
     try:
         image_content = download_from_gcs(bucket_name, filename)
     except Exception as e:
-        logger.error(f"Error downloading file from GCS: {e}")
         create_json_file(bucket_name, filename, "Error downloading", "Error downloading", "failure", f"Failed to download: {e}")
         return {"title": "Error downloading file", "description": "Error downloading file"}
 
     try:
         uploaded_file = upload_to_gemini(image_content, mime_type="image/jpeg")
     except Exception as e:
-        logger.error(f"Error uploading file to Gemini: {e}")
         create_json_file(bucket_name, filename, "Error uploading", "Error uploading", "failure", f"Failed to upload: {e}")
         return {"title": "Error uploading file", "description": "Error uploading file"}
 
     try:
         response = model.generate_content([uploaded_file, PROMPT])
         response.resolve()
-        logger.info(f"Gemini's raw response: {response.text}")
 
         match = re.search(r"\{.*?\}(?=\s*|$)", response.text, re.DOTALL)
         if match:
@@ -132,7 +119,6 @@ def generate_title_description(bucket_name, filename):
         create_json_file(bucket_name, filename, title, description)
         return {"title": title, "description": description}
     except Exception as e:
-        logger.error(f"Error generating title/description: {e}")
         create_json_file(bucket_name, filename, "Error generating", "Error generating", "failure", f"Unexpected error: {e}")
         return {"title": "Error generating title", "description": "Error generating description"}
 
