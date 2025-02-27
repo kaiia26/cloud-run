@@ -92,6 +92,12 @@ def create_json_file(bucket_name, filename, title, description, status="success"
     json_filename = filename.rsplit(".", 1)[0].replace(" ", "_") + ".json"
     upload_to_gcs(json_content, bucket_name, json_filename, content_type="application/json")
 
+def create_text_file(bucket_name, filename, title, description):
+    """Creates and uploads the text to GCS."""
+    text_content = f"Title: {title}\nDescription: {description}"
+    text_filename = filename.rsplit(".", 1)[0].replace(" ", "_") + ".txt"
+    upload_to_gcs(text_content, BUCKET_NAME, text_filename, content_type="text/plain")
+
 # Generate title and description
 def generate_title_description(bucket_name, filename):
     try:
@@ -120,6 +126,7 @@ def generate_title_description(bucket_name, filename):
         title = response_json.get("title", "Untitled")
         description = response_json.get("description", "No description available")
         create_json_file(bucket_name, filename, title, description)
+        create_text_file(bucket_name, filename, title, description)
         return {"title": title, "description": description}
     except Exception as e:
         create_json_file(bucket_name, filename, "Error generating", "Error generating", "failure", f"Unexpected error: {e}")
