@@ -19,7 +19,7 @@ def access_secret(secret_name):
     return response.payload.data.decode("UTF-8")
 
 # Fetch API key and configure Gemini API
-api_key = os.environ.get("GEMINI_API_KEY")
+api_key = access_secret("GEMINI_API_KEY")
 genai.configure(api_key=api_key)
 
 generation_config = {
@@ -47,6 +47,9 @@ Return the output in strict JSON format like this:
 """
 
 model = genai.GenerativeModel(model_name="gemini-1.5-flash", generation_config=generation_config, safety_settings=safety_settings)
+
+def allowed_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 # Google Cloud Storage functions
 def upload_to_gcs(file, bucket_name, filename, content_type=None):
@@ -130,7 +133,6 @@ def upload_file():
             filename = secure_filename(file.filename)
             file_content = file.read()
             upload_to_gcs(file_content, BUCKET_NAME, filename)
-            flash('File successfully uploaded')
     return render_template('index.html', files=list_blobs(BUCKET_NAME))
 
 @app.route('/image_details/<filename>')
