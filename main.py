@@ -19,7 +19,7 @@ def access_secret(secret_name):
     return response.payload.data.decode("UTF-8")
 
 # Fetch API key and configure Gemini API
-api_key = access_secret("GEMINI_API_KEY")
+api_key = os.environ.get("GEMINI_API_KEY")
 genai.configure(api_key=api_key)
 
 generation_config = {
