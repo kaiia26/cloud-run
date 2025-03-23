@@ -1,0 +1,7 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/project-1-kaia-perez-hvala/green-service']
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/project-1-kaia-perez-hvala/green-service']
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args: ['run', 'deploy', 'green-service', '--image', 'gcr.io/project-1-kaia-perez-hvala/green-service', '--platform', 'managed', '--region', 'us-east1']
